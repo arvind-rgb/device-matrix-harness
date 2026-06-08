@@ -1,0 +1,149 @@
+name: run-suite
+
+# Dispatch-only — never on push, pull_request, schedule, or pull_request_target.
+# This is the entire trigger surface; secrets cannot be exfiltrated by anyone
+# who forks this repo because no workflow ever runs on a fork-triggered event.
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Identifier for this run"
+        required: true
+      apk_url:
+        description: "Signed Android build URL"
+        required: false
+        default: ""
+      app_tar_url:
+        description: "Signed iOS build URL"
+        required: false
+        default: ""
+      maestro_bundle_url:
+        description: "Signed Maestro bundle URL"
+        required: true
+      callback_url:
+        description: "Result callback base"
+        required: true
+      callback_token:
+        description: "Per-run callback token"
+        required: true
+
+# Only one run for a given run_id may execute at a time.
+concurrency:
+  group: run-${{ inputs.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  android:
+    if: inputs.apk_url != ''
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        shard: [0, 1, 2, 3]
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Notify start
+        run: |
+          curl --fail-with-body --silent --show-error \
+            -X POST \
+            -H "Authorization: Bearer ${{ inputs.callback_token }}" \
+            "${{ inputs.callback_url }}/${{ inputs.run_id }}/shard/android/${{ matrix.shard }}/start"
+      - name: Install Maestro CLI
+        run: |
+          curl -fsSL https://get.maestro.mobile.dev | bash
+          # The installer writes to .bash_profile / .zshrc which CI shells
+          # don't source. Extend PATH for all subsequent steps explicitly.
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+      - name: Fetch build
+        run: scripts/fetch-build.sh "${{ inputs.apk_url }}" build.apk
+      - name: Fetch flow bundle
+        run: scripts/fetch-flow-bundle.sh "${{ inputs.maestro_bundle_url }}"
+      - name: Boot emulator and run shard
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          arch: x86_64
+          script: scripts/run-shard.sh android ${{ matrix.shard }} 4 build.apk
+      - name: Callback
+        if: always()
+        run: scripts/callback.sh "${{ inputs.callback_url }}" "${{ inputs.callback_token }}" "${{ inputs.run_id }}" android ${{ matrix.shard }}
+
+  ios:
+    if: inputs.app_tar_url != ''
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        shard: [0, 1, 2, 3]
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Notify start
+        run: |
+          curl --fail-with-body --silent --show-error \
+            -X POST \
+            -H "Authorization: Bearer ${{ inputs.callback_token }}" \
+            "${{ inputs.callback_url }}/${{ inputs.run_id }}/shard/ios/${{ matrix.shard }}/start"
+      - name: Install Maestro CLI
+        run: |
+          curl -fsSL https://get.maestro.mobile.dev | bash
+          # The installer writes to .bash_profile / .zshrc which CI shells
+          # don't source. Extend PATH for all subsequent steps explicitly.
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+      - name: Fetch build
+        run: scripts/fetch-build.sh "${{ inputs.app_tar_url }}" build.app.tar.gz
+      - name: Extract build
+        run: |
+          # Handle both formats (EAS Build emits .zip; local xcodebuild + tar emits .tar.gz)
+          if file build.app.tar.gz | grep -qiE 'zip archive'; then
+            unzip -q build.app.tar.gz
+          else
+            tar -xzf build.app.tar.gz
+          fi
+          # Either path leaves a *.app directory in the workspace.
+          APP=$(find . -maxdepth 3 -name "*.app" -type d | head -1)
+          if [[ -z "$APP" ]]; then echo "ERROR: no .app extracted"; exit 1; fi
+          echo "EXTRACTED_APP=$APP" >> "$GITHUB_ENV"
+      - name: Fetch flow bundle
+        run: scripts/fetch-flow-bundle.sh "${{ inputs.maestro_bundle_url }}"
+      - name: Boot simulator and install
+        run: |
+          # Pick the latest iOS runtime that's actually installed on this runner.
+          # The macOS image rotates these; never hardcode a version.
+          RUNTIME=$(xcrun simctl list runtimes -j | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          ios = [r for r in d['runtimes'] if r.get('platform') == 'iOS' and r.get('isAvailable')]
+          ios.sort(key=lambda r: tuple(int(x) for x in r['version'].split('.')))
+          print(ios[-1]['identifier'])")
+          echo "Using iOS runtime: $RUNTIME"
+          # Pick a device type that exists in the chosen runtime.
+          DEV_TYPE=$(xcrun simctl list devicetypes -j | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          # Prefer iPhone 15 Pro Max → 15 Pro → any iPhone 15 → any iPhone.
+          for q in ['iPhone-15-Pro-Max','iPhone-15-Pro','iPhone-15','iPhone-14','iPhone']:
+              for dt in d['devicetypes']:
+                  if q in dt['identifier']:
+                      print(dt['identifier']); raise SystemExit(0)")
+          echo "Using device type: $DEV_TYPE"
+          DEVICE_UDID=$(xcrun simctl create test-sim "$DEV_TYPE" "$RUNTIME")
+          xcrun simctl boot "$DEVICE_UDID"
+          xcrun simctl install "$DEVICE_UDID" "$EXTRACTED_APP"
+          echo "DEVICE_UDID=$DEVICE_UDID" >> "$GITHUB_ENV"
+      - name: Run shard
+        run: scripts/run-shard.sh ios ${{ matrix.shard }} 4
+      - name: Callback
+        if: always()
+        run: scripts/callback.sh "${{ inputs.callback_url }}" "${{ inputs.callback_token }}" "${{ inputs.run_id }}" ios ${{ matrix.shard }}
+
+  finalize:
+    needs: [android, ios]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Finalize
+        run: |
+          curl --fail-with-body --silent --show-error \
+            -X POST \
+            -H "Authorization: Bearer ${{ inputs.callback_token }}" \
+            "${{ inputs.callback_url }}/${{ inputs.run_id }}/finalize"

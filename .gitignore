@@ -1,0 +1,7 @@
+flows/
+build.apk
+*.app
+*.tar.gz
+shard-output/
+node_modules/
+.DS_Store
