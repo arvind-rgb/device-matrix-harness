@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [0]
       fail-fast: false
     steps:
       - uses: actions/checkout@v4
@@ -71,7 +71,7 @@ jobs:
           ram-size: 4096M
           disable-animations: true
           emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          script: scripts/run-shard.sh android ${{ matrix.shard }} 4 build.apk
+          script: scripts/run-shard.sh android ${{ matrix.shard }} 1 build.apk
       - name: Callback
         if: always()
         run: scripts/callback.sh "${{ inputs.callback_url }}" "${{ inputs.callback_token }}" "${{ inputs.run_id }}" android ${{ matrix.shard }}
@@ -81,7 +81,7 @@ jobs:
     runs-on: macos-latest
     strategy:
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [0]
       fail-fast: false
     steps:
       - uses: actions/checkout@v4
@@ -139,7 +139,7 @@ jobs:
           xcrun simctl install "$DEVICE_UDID" "$EXTRACTED_APP"
           echo "DEVICE_UDID=$DEVICE_UDID" >> "$GITHUB_ENV"
       - name: Run shard
-        run: scripts/run-shard.sh ios ${{ matrix.shard }} 4
+        run: scripts/run-shard.sh ios ${{ matrix.shard }} 1
       - name: Callback
         if: always()
         run: scripts/callback.sh "${{ inputs.callback_url }}" "${{ inputs.callback_token }}" "${{ inputs.run_id }}" ios ${{ matrix.shard }}
