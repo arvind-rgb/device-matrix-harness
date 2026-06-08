@@ -14,6 +14,11 @@
 # Output: ./shard-output/results.junit.xml  +  ./shard-output/screenshots/
 set -uo pipefail
 
+# Ensure the Maestro CLI is on PATH even when this script runs inside the
+# android-emulator-runner action's shell (which doesn't always inherit the
+# $GITHUB_PATH additions from the install step).
+export PATH="$HOME/.maestro/bin:$PATH"
+
 PLATFORM="${1:?platform}"
 SHARD_INDEX="${2:?shard_index}"
 SHARD_TOTAL="${3:?shard_total}"
