@@ -42,17 +42,19 @@ jobs:
       fail-fast: false
     steps:
       - uses: actions/checkout@v4
+      - name: Enable KVM (hardware accel — prevents adb-daemon boot failures)
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
       - name: Notify start
         run: |
-          curl --fail-with-body --silent --show-error \
-            -X POST \
+          curl --silent --show-error -X POST \
             -H "Authorization: Bearer ${{ inputs.callback_token }}" \
-            "${{ inputs.callback_url }}/${{ inputs.run_id }}/shard/android/${{ matrix.shard }}/start"
+            "${{ inputs.callback_url }}/${{ inputs.run_id }}/shard/android/${{ matrix.shard }}/start" || true
       - name: Install Maestro CLI
         run: |
           curl -fsSL https://get.maestro.mobile.dev | bash
-          # The installer writes to .bash_profile / .zshrc which CI shells
-          # don't source. Extend PATH for all subsequent steps explicitly.
           echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
       - name: Fetch build
         run: scripts/fetch-build.sh "${{ inputs.apk_url }}" build.apk
@@ -61,8 +63,14 @@ jobs:
       - name: Boot emulator and run shard
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 33
+          api-level: 30
+          target: google_apis
           arch: x86_64
+          profile: pixel_5
+          cores: 2
+          ram-size: 4096M
+          disable-animations: true
+          emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: scripts/run-shard.sh android ${{ matrix.shard }} 4 build.apk
       - name: Callback
         if: always()
