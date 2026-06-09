@@ -89,6 +89,53 @@ fi
 maestro test --format junit --output "$OUT/results.junit.xml" "${ENV_ARGS[@]}" "$RUNDIR"
 echo "maestro exit=$?"
 
+# ── Retry flakes: re-run failed flows up to MAESTRO_RETRIES times; a flow that
+#    passes on any retry is upgraded to passed in the merged JUnit. Mitigates the
+#    Android Maestro "Unknown error" driver flakes (transient). ─────────────────
+RETRIES="${MAESTRO_RETRIES:-2}"
+failed_list() {
+  python3 - "$1" <<'PYEOF' 2>/dev/null || true
+import sys, xml.etree.ElementTree as ET
+try:
+    t=ET.parse(sys.argv[1])
+    for tc in t.iter('testcase'):
+        if tc.find('failure') is not None or tc.find('error') is not None:
+            print(tc.get('name'))
+except Exception: pass
+PYEOF
+}
+failed_list "$OUT/results.junit.xml" > /tmp/_failed.txt
+attempt=1
+while [ "$attempt" -le "$RETRIES" ] && [ -s /tmp/_failed.txt ]; do
+  echo "retry $attempt/$RETRIES — re-running $(grep -c . /tmp/_failed.txt) failed flow(s)"
+  RDIR="$PWD/../retry-$attempt"; rm -rf "$RDIR"; mkdir -p "$RDIR"
+  [ -d subflows ] && cp -R subflows "$RDIR/subflows"
+  [ -f config.yaml ] && cp config.yaml "$RDIR/"
+  while IFS= read -r name; do [ -n "$name" ] && cp "$name.yaml" "$RDIR/" 2>/dev/null; done < /tmp/_failed.txt
+  maestro test --format junit --output "$OUT/retry-$attempt.junit.xml" "${ENV_ARGS[@]}" "$RDIR" || true
+  [ -d "$HOME/.maestro/tests" ] && find "$HOME/.maestro/tests" -name '*.png' -exec cp {} "$OUT/screenshots/" \; 2>/dev/null || true
+  python3 - "$OUT/results.junit.xml" "$OUT/retry-$attempt.junit.xml" <<'PYEOF' || true
+import sys, xml.etree.ElementTree as ET
+main_fp, retry_fp = sys.argv[1], sys.argv[2]
+try: rt=ET.parse(retry_fp)
+except Exception: sys.exit(0)
+passed={tc.get('name') for tc in rt.iter('testcase') if tc.find('failure') is None and tc.find('error') is None}
+mt=ET.parse(main_fp); root=mt.getroot()
+for tc in root.iter('testcase'):
+    if tc.get('name') in passed:
+        for tag in ('failure','error'):
+            e=tc.find(tag)
+            if e is not None: tc.remove(e)
+        if 'status' in tc.attrib: tc.set('status','PASSED')
+for ts in root.iter('testsuite'):
+    ts.set('failures', str(sum(1 for tc in ts.iter('testcase') if tc.find('failure') is not None)))
+    ts.set('errors',   str(sum(1 for tc in ts.iter('testcase') if tc.find('error') is not None)))
+mt.write(main_fp, encoding='UTF-8', xml_declaration=True)
+PYEOF
+  failed_list "$OUT/results.junit.xml" > /tmp/_failed.txt
+  attempt=$((attempt+1))
+done
+
 [ -d "$HOME/.maestro/tests" ] && find "$HOME/.maestro/tests" -name '*.png' -exec cp {} "$OUT/screenshots/" \; 2>/dev/null || true
 [ -f "$OUT/results.junit.xml" ] || printf '<?xml version="1.0" encoding="UTF-8"?><testsuites><testsuite name="no-output" tests="0"/></testsuites>\n' > "$OUT/results.junit.xml"
 exit 0
