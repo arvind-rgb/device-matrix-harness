@@ -98,7 +98,7 @@ jobs:
           curl --fail-with-body --silent --show-error \
             -X POST \
             -H "Authorization: Bearer ${{ inputs.callback_token }}" \
-            "${{ inputs.callback_url }}/${{ inputs.run_id }}/shard/ios/${{ matrix.shard }}/start"
+            "${{ inputs.callback_url }}/${{ inputs.run_id }}/shard/ios/${{ matrix.shard }}/start" || true
       - name: Install Maestro CLI
         run: |
           curl -fsSL https://get.maestro.mobile.dev | bash
