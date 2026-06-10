@@ -151,6 +151,14 @@ jobs:
       - name: Callback
         if: always()
         run: scripts/callback.sh "${{ inputs.callback_url }}" "${{ inputs.callback_token }}" "${{ inputs.run_id }}" ios ${{ matrix.shard }}
+      - name: Upload screenshots + junit (debug)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shard-ios-${{ matrix.shard }}
+          path: shard-output
+          if-no-files-found: ignore
+          retention-days: 3
 
   finalize:
     needs: [android, ios]
